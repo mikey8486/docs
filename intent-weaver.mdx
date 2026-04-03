@@ -1,0 +1,50 @@
+---
+title: Intent Weaver
+sidebarTitle: Intent Weaver
+---
+
+# Intent Weaver
+
+A new mini software tool that turns vague promises into a day-by-day execution plan.
+
+## Why this is useful
+
+People usually fail commitments because they keep goals in narrative form instead of executable form.
+Intent Weaver compiles commitments into:
+
+- collision risk score
+- concrete first actions
+- anti-forgetting triggers
+- minute-level daily plan chunks
+
+## Run it
+
+```bash
+python3 software/intent_weaver.py software/sample_commitments.json --daily-minutes 140
+```
+
+## Input format
+
+```json
+{
+  "commitments": [
+    "Finish onboarding redesign by 2026-04-07 (6 hours, high energy)",
+    "Call grandma and set recurring Sunday check-in by 2026-04-05 (1 hour, low energy)"
+  ]
+}
+```
+
+## Output shape
+
+The tool outputs JSON with:
+
+- `collision_risk_score`
+- `first_actions`
+- `anti_forgetting_triggers`
+- `plan` (ordered daily chunks)
+
+## Notes
+
+- Due dates use `YYYY-MM-DD` if present in each line.
+- If no date is provided, default due date is 7 days from run date.
+- If no effort is provided, default estimate is 2 hours.
