@@ -1,56 +1,83 @@
 ---
-title: "Build a Personal Companion AI (OpenRouter + Local Memory)"
-description: "Create a cheerful, supportive, playful assistant with persistent memory stored on your own computer."
+title: "Build a Personal Companion AI (Web + Mobile Access)"
+description: "Run your AI companion locally and access it from your phone on the same network using OpenRouter and persistent memory."
 ---
 
 ## What you'll build
 
-This guide creates a **local-first personal AI companion** you can run from your terminal.
-
-Features:
+A full personal AI companion app that:
 
 - Uses your `OPENROUTER_API_KEY` from environment variables.
-- Personality profile (cheerful, caring, supportive, playful).
-- Saves memory on your computer in JSON files.
-- Loads memory at startup so the assistant remembers prior chats.
-- Simple CLI chat loop (`exit` to quit).
+- Has a cheerful, caring, supportive, playful personality.
+- Saves conversation memory on your computer.
+- Runs on localhost (`127.0.0.1:5000`) and your LAN (`0.0.0.0:5000`) so your phone can open it.
+- Includes a simple browser UI with chat history and a **Download chat as PDF** button.
 
-> Tip: You can set any assistant name you want in the config section.
-
-## 1) Project setup
+## 1) Create project files
 
 ```bash
-mkdir personal-ai
-cd personal-ai
-python -m venv .venv
-source .venv/bin/activate
-pip install openai rich
+mkdir personal-ai-web
+cd personal-ai-web
+mkdir -p templates static memory
 ```
 
-## 2) Set your OpenRouter key
+Create this structure:
+
+```text
+personal-ai-web/
+├─ main.py
+├─ requirements.txt
+├─ templates/
+│  └─ index.html
+├─ static/
+│  └─ styles.css
+└─ memory/
+```
+
+## 2) Add dependencies
+
+Create `requirements.txt`:
+
+```txt
+flask==3.1.1
+openai==1.79.0
+reportlab==4.2.2
+```
+
+Install:
+
+```bash
+python -m venv .venv
+source .venv/bin/activate
+pip install -r requirements.txt
+```
+
+## 3) Set your OpenRouter API key
 
 ```bash
 export OPENROUTER_API_KEY="sk-..."
 ```
 
-You can add this to your shell profile (`~/.bashrc` or `~/.zshrc`) if you want it loaded automatically.
-
-## 3) Create `main.py`
+## 4) Create `main.py`
 
 ```python
+import io
 import json
 import os
 from datetime import datetime
 from pathlib import Path
 
+from flask import Flask, render_template, request, redirect, url_for, send_file
 from openai import OpenAI
-from rich.console import Console
-from rich.prompt import Prompt
+from reportlab.lib.pagesizes import letter
+from reportlab.pdfgen import canvas
+
+app = Flask(__name__)
 
 # -----------------------------
 # Configuration
 # -----------------------------
-ASSISTANT_NAME = "Google"  # Change if desired
+ASSISTANT_NAME = "Google"
 MODEL = "openai/gpt-4.1-mini"
 MEMORY_DIR = Path("memory")
 PROFILE_PATH = MEMORY_DIR / "profile.json"
@@ -63,39 +90,42 @@ You are {ASSISTANT_NAME}, a personal AI companion.
 Personality:
 - Cheerful and caring
 - Supportive and emotionally aware
-- Lightly playful and flirty (always respectful, never manipulative)
+- Playful and lightly flirty (always respectful)
 
 Behavior:
 - Be warm, practical, and kind.
-- Remember user preferences and important details from previous chats.
-- Keep responses concise unless the user asks for depth.
-- If unsure, ask a clarifying question.
+- Remember preferences and important personal details.
+- Keep answers clear and helpful.
 """.strip()
-
-console = Console()
 
 
 def ensure_memory_files() -> None:
     MEMORY_DIR.mkdir(parents=True, exist_ok=True)
-
     if not PROFILE_PATH.exists():
         PROFILE_PATH.write_text(json.dumps({"facts": [], "preferences": []}, indent=2))
-
     if not SUMMARY_PATH.exists():
         SUMMARY_PATH.write_text("No long-term summary yet.")
-
     if not CONVO_PATH.exists():
         CONVO_PATH.write_text("")
 
 
-def load_recent_messages(limit: int = 30):
-    messages = []
-    if CONVO_PATH.exists():
-        lines = CONVO_PATH.read_text().splitlines()
-        for line in lines[-limit:]:
-            if line.strip():
-                messages.append(json.loads(line))
-    return messages
+def load_profile() -> dict:
+    return json.loads(PROFILE_PATH.read_text())
+
+
+def save_profile(profile: dict) -> None:
+    PROFILE_PATH.write_text(json.dumps(profile, indent=2))
+
+
+def maybe_extract_memory(user_text: str, profile: dict) -> dict:
+    low = user_text.lower()
+    if "my name is" in low:
+        profile["facts"].append(user_text)
+    if "i like" in low or "i love" in low or "i prefer" in low:
+        profile["preferences"].append(user_text)
+    profile["facts"] = profile["facts"][-100:]
+    profile["preferences"] = profile["preferences"][-100:]
+    return profile
 
 
 def append_message(role: str, content: str) -> None:
@@ -108,126 +138,235 @@ def append_message(role: str, content: str) -> None:
         f.write(json.dumps(entry) + "\n")
 
 
-def load_profile():
-    return json.loads(PROFILE_PATH.read_text())
+def load_history(limit: int = 40) -> list[dict]:
+    if not CONVO_PATH.exists():
+        return []
+    rows = [json.loads(line) for line in CONVO_PATH.read_text().splitlines() if line.strip()]
+    return rows[-limit:]
 
 
-def save_profile(profile):
-    PROFILE_PATH.write_text(json.dumps(profile, indent=2))
-
-
-def maybe_extract_memory(user_text: str, profile: dict) -> dict:
-    """
-    Tiny rule-based extractor for durable memory.
-    You can replace this with an LLM extraction pass later.
-    """
-    lowered = user_text.lower()
-
-    if "my name is" in lowered:
-        profile["facts"].append(user_text)
-    if "i like" in lowered or "i love" in lowered or "i prefer" in lowered:
-        profile["preferences"].append(user_text)
-
-    # Keep memory compact
-    profile["facts"] = profile["facts"][-100:]
-    profile["preferences"] = profile["preferences"][-100:]
-    return profile
-
-
-def build_messages(user_input: str):
+def build_messages(user_text: str) -> list[dict]:
     profile = load_profile()
     summary = SUMMARY_PATH.read_text().strip()
-    recent = load_recent_messages(limit=20)
+    history = load_history(limit=20)
 
     messages = [
         {"role": "system", "content": SYSTEM_PROMPT},
         {
             "role": "system",
-            "content": (
-                "Long-term memory summary:\n"
-                f"{summary}\n\n"
-                "Structured profile:\n"
-                f"{json.dumps(profile)}"
-            ),
+            "content": f"Long-term summary:\n{summary}\n\nProfile:\n{json.dumps(profile)}",
         },
     ]
-
-    for item in recent:
-        messages.append({"role": item["role"], "content": item["content"]})
-
-    messages.append({"role": "user", "content": user_input})
+    for row in history:
+        messages.append({"role": row["role"], "content": row["content"]})
+    messages.append({"role": "user", "content": user_text})
     return messages
 
 
-def chat_once(client: OpenAI, user_input: str) -> str:
-    messages = build_messages(user_input)
+def get_client() -> OpenAI:
+    api_key = os.getenv("OPENROUTER_API_KEY")
+    if not api_key:
+        raise RuntimeError("Missing OPENROUTER_API_KEY. Run: export OPENROUTER_API_KEY='sk-...'")
+    return OpenAI(base_url="https://openrouter.ai/api/v1", api_key=api_key)
+
+
+def ask_assistant(user_text: str) -> str:
+    client = get_client()
     response = client.chat.completions.create(
         model=MODEL,
-        messages=messages,
+        messages=build_messages(user_text),
         temperature=0.8,
     )
     return response.choices[0].message.content.strip()
 
 
-def main():
-    api_key = os.getenv("OPENROUTER_API_KEY")
-    if not api_key:
-        raise RuntimeError("Missing OPENROUTER_API_KEY. Run: export OPENROUTER_API_KEY='sk-...'")
+@app.route("/", methods=["GET"])
+def home():
+    history = load_history(limit=100)
+    return render_template("index.html", assistant_name=ASSISTANT_NAME, history=history)
 
-    ensure_memory_files()
 
-    client = OpenAI(
-        base_url="https://openrouter.ai/api/v1",
-        api_key=api_key,
+@app.route("/chat", methods=["POST"])
+def chat():
+    user_text = request.form.get("message", "").strip()
+    if not user_text:
+        return redirect(url_for("home"))
+
+    append_message("user", user_text)
+    profile = maybe_extract_memory(user_text, load_profile())
+    save_profile(profile)
+
+    assistant_text = ask_assistant(user_text)
+    append_message("assistant", assistant_text)
+    return redirect(url_for("home"))
+
+
+@app.route("/download-pdf", methods=["GET"])
+def download_pdf():
+    history = load_history(limit=1000)
+
+    buffer = io.BytesIO()
+    pdf = canvas.Canvas(buffer, pagesize=letter)
+    width, height = letter
+    y = height - 40
+
+    pdf.setFont("Helvetica-Bold", 14)
+    pdf.drawString(40, y, f"{ASSISTANT_NAME} Chat Export")
+    y -= 30
+    pdf.setFont("Helvetica", 10)
+
+    for row in history:
+        line = f"[{row['ts']}] {row['role'].upper()}: {row['content']}"
+        for segment in [line[i:i+110] for i in range(0, len(line), 110)]:
+            if y < 40:
+                pdf.showPage()
+                pdf.setFont("Helvetica", 10)
+                y = height - 40
+            pdf.drawString(40, y, segment)
+            y -= 14
+
+    pdf.save()
+    buffer.seek(0)
+
+    return send_file(
+        buffer,
+        as_attachment=True,
+        download_name="chat-history.pdf",
+        mimetype="application/pdf",
     )
-
-    console.print(f"[bold green]{ASSISTANT_NAME} is online.[/bold green] Type 'exit' to quit.")
-
-    while True:
-        user_text = Prompt.ask("[bold cyan]You[/bold cyan]").strip()
-        if user_text.lower() in {"exit", "quit"}:
-            console.print("[yellow]Goodbye![/yellow]")
-            break
-
-        append_message("user", user_text)
-
-        profile = load_profile()
-        profile = maybe_extract_memory(user_text, profile)
-        save_profile(profile)
-
-        assistant_text = chat_once(client, user_text)
-        append_message("assistant", assistant_text)
-
-        console.print(f"[bold magenta]{ASSISTANT_NAME}[/bold magenta]: {assistant_text}")
 
 
 if __name__ == "__main__":
-    main()
+    ensure_memory_files()
+
+    # Localhost only:
+    # app.run(host="127.0.0.1", port=5000, debug=True)
+
+    # Public on same Wi-Fi/LAN (access from mobile):
+    app.run(host="0.0.0.0", port=5000, debug=True)
 ```
 
-## 4) Run it
+## 5) Create `templates/index.html`
+
+```html
+<!doctype html>
+<html>
+  <head>
+    <meta charset="utf-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1" />
+    <title>{{ assistant_name }} - Personal AI</title>
+    <link rel="stylesheet" href="{{ url_for('static', filename='styles.css') }}" />
+  </head>
+  <body>
+    <main class="container">
+      <h1>{{ assistant_name }} 💚</h1>
+      <p class="subtitle">Cheerful, supportive, playful assistant with local memory.</p>
+
+      <div class="actions">
+        <a class="btn" href="{{ url_for('download_pdf') }}">Download chat as PDF</a>
+      </div>
+
+      <section class="chat-box">
+        {% for msg in history %}
+          <div class="msg {{ msg.role }}">
+            <strong>{{ msg.role|upper }}</strong>
+            <p>{{ msg.content }}</p>
+          </div>
+        {% endfor %}
+      </section>
+
+      <form action="{{ url_for('chat') }}" method="post" class="chat-form">
+        <input type="text" name="message" placeholder="Type your message..." required />
+        <button type="submit">Send</button>
+      </form>
+    </main>
+  </body>
+</html>
+```
+
+## 6) Create `static/styles.css`
+
+```css
+body {
+  font-family: Inter, system-ui, sans-serif;
+  background: #0f172a;
+  color: #e2e8f0;
+  margin: 0;
+}
+
+.container {
+  max-width: 800px;
+  margin: 0 auto;
+  padding: 24px;
+}
+
+.subtitle {
+  color: #94a3b8;
+}
+
+.chat-box {
+  border: 1px solid #334155;
+  border-radius: 12px;
+  padding: 16px;
+  max-height: 60vh;
+  overflow-y: auto;
+  margin: 16px 0;
+  background: #111827;
+}
+
+.msg {
+  margin-bottom: 14px;
+  padding: 10px;
+  border-radius: 10px;
+}
+
+.msg.user {
+  background: #1d4ed8;
+}
+
+.msg.assistant {
+  background: #047857;
+}
+
+.chat-form {
+  display: flex;
+  gap: 8px;
+}
+
+.chat-form input {
+  flex: 1;
+  border: 1px solid #475569;
+  border-radius: 10px;
+  padding: 12px;
+  background: #0b1220;
+  color: #e2e8f0;
+}
+
+.chat-form button,
+.btn {
+  border: none;
+  border-radius: 10px;
+  padding: 12px 14px;
+  background: #22c55e;
+  color: #052e16;
+  font-weight: 700;
+  text-decoration: none;
+  cursor: pointer;
+}
+```
+
+## 7) Run it
 
 ```bash
 python main.py
 ```
 
-## 5) Where memory is stored
+Open on your computer:
 
-Inside your project folder:
+- `http://127.0.0.1:5000`
 
-- `memory/profile.json` → durable facts/preferences.
-- `memory/conversation.jsonl` → full message-by-message history.
-- `memory/summary.txt` → optional rolling summary you can update later.
+Open on your phone (same Wi-Fi):
 
-## Optional upgrades
+- `http://192.168.1.10:5000` (replace with your computer's LAN IP)
 
-- Add encrypted memory at rest.
-- Add a second "memory consolidation" pass every N messages.
-- Add a safety layer for boundaries and tone.
-- Add voice input/output.
-
-## Troubleshooting
-
-- **401 Unauthorized**: check `OPENROUTER_API_KEY` value.
-- **Model not found**: swap `MODEL` to one available in your OpenRouter account.
-- **No memory showing up**: confirm the `memory/` directory is writable and files are created.
+> Note: this is **HTTP** by default, not HTTPS. Use a reverse proxy (like Caddy/Nginx) if you need HTTPS on LAN.
