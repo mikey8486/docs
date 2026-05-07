@@ -13,6 +13,24 @@ A full personal AI companion app that:
 - Runs on localhost (`127.0.0.1:5000`) and your LAN (`0.0.0.0:5000`) so your phone can open it.
 - Includes a simple browser UI with chat history and a **Download chat as PDF** button.
 
+## If you already did `git clone`, do this next
+
+From your terminal:
+
+```bash
+cd personal-ai-web
+python -m venv .venv
+source .venv/bin/activate
+pip install -r requirements.txt
+export OPENROUTER_API_KEY="sk-..."
+python main.py
+```
+
+Then open:
+
+- Computer: `http://127.0.0.1:5000`
+- Phone (same Wi-Fi): `http://<your-computer-lan-ip>:5000`
+
 ## 1) Create project files
 
 ```bash
