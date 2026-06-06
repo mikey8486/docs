@@ -1,0 +1,27 @@
+<!doctype html>
+<html>
+  <head>
+    <meta charset="utf-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1" />
+    <title>{{ assistant_name }} - Personal AI</title>
+    <link rel="stylesheet" href="{{ url_for('static', filename='styles.css') }}" />
+  </head>
+  <body>
+    <main class="container">
+      <h1>{{ assistant_name }} 💚</h1>
+      <a class="btn" href="{{ url_for('download_pdf') }}">Download chat as PDF</a>
+      <section class="chat-box">
+        {% for msg in history %}
+          <div class="msg {{ msg.role }}">
+            <strong>{{ msg.role|upper }}</strong>
+            <p>{{ msg.content }}</p>
+          </div>
+        {% endfor %}
+      </section>
+      <form action="{{ url_for('chat') }}" method="post" class="chat-form">
+        <input type="text" name="message" placeholder="Type your message..." required />
+        <button type="submit">Send</button>
+      </form>
+    </main>
+  </body>
+</html>
